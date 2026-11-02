@@ -4,14 +4,14 @@ import time
 
 class FactoryPLC:
     def __init__(self):
-        self.clirnt=ModbusTcpClient(
+        self.client=ModbusTcpClient(
             PLC_CONFIG["ip"],
             port=PLC_CONFIG["port"],
             timeout=PLC_CONFIG["timeout"]
         )
 
     def connect(self):
-        return self.clirnt.connect()
+        return self.client.connect()
 
     def readAll(self):
         data={}
@@ -36,10 +36,10 @@ class FactoryPLC:
             if not h.isError():
                 data['input_ regs'] =h.registers
 
-    except Exception as e:
+        except Exception as e:
             data["Error"]=str(e)
 
-    return data 
+        return data 
 
 def close(self):
     self.client.close()

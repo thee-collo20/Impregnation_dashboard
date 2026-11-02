@@ -36,8 +36,8 @@ def process_ovens(holding_regs):
         }
 
         #Line Stats
-        actuals=[results[f"oven{i+1}"]["actual"] for i in range(6)]
-        results["stats"]={
+        actuals=[result[f"oven{i+1}"]["actual"] for i in range(6)]
+        result["stats"]={
             "avg_temp": round(sum(actuals)/6,1),
             "delta_max_min": round(max(actuals)-min(actuals),1),
             "stability": round(100-(max(actuals)-min(actuals))/2,1)

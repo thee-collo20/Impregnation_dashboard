@@ -14,7 +14,7 @@ from modbus_client import readAll
 from Logic import ovens, motors, sensors, alarms
 
 st.set_page_config(
-    page_title="BIASHARA MASTERS IMPREGNATION", layout="wide"
+    page_title="BIASHARA MASTERS IMPREGNATION LINE MONITOR", layout="wide"
 )
 
 st.markdown("""
@@ -86,5 +86,26 @@ colors=[
 ]
 
 for i in range(6):
-    fig.add_trace(go.Scatter(x=st.session_state.ticks["time"], y=st.session_state.ticks[f"oven{i+1}"], name=f"OVEN-{i+1}", ))
+    fig.add_trace(go.Scatter(x=st.session_state.ticks["time"], y=st.session_state.ticks[f"oven{i+1}"], name=f"OVEN-{i+1}", line=dict(colors[i])))
                
+fig.update_layout(tempate="plotly_white", height=380, title="TEMPERATURE TREND. LAST 60 MINUTES.")
+st.plotly_chart(fig, use_container_width=True)
+
+#System state simulation
+c1,c2=st.column([2,1])
+with c2:
+    st.markdown("### SYSTEM STATE")
+    st.write(f"FEED RATE: {sensor_data.get('resin_weight', 0)} kg/hr")
+    st.write(f"MAIN DRIVE: {'RUNNING' if motor_data.get('main_drive', {}).get('run') else 'STOPPED'}")
+    st.write(f"E-STOP OK: {sensor_data.get('e_stop_ok')}")
+    st.markdown("### ALERTS")
+    for a in alert_list:
+        if a['level']=="CRIT":
+            st.error(a['msg'])
+        else:
+            st.warning(a['msg'])
+
+st.markdown("BIASHARA MASTERS CONTROL v1.0.0 | PLC CONNECTED | SECURE SESSION | a product of KUTSWAINC.")
+
+time.sleep(1.5)
+st.rerun()
