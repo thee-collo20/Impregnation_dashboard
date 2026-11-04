@@ -1,3 +1,4 @@
+from collections import deque
 from datetime import datetime
 import time
 
@@ -35,7 +36,7 @@ st.markdown(
 
 @st.cache_data(ttl=POLL_INTERVAL_SECONDS, show_spinner=False)
 def read_plc_snapshot():
-    """Health-check by reading a snapshot; retry transient failures with backoff."""
+    """Read one PLC snapshot, retrying transient failures with bounded backoff."""
     if FactoryPLC is None:
         return None, "pymodbus is unavailable"
 
@@ -54,7 +55,7 @@ def read_plc_snapshot():
             except Exception:
                 pass
         if attempt + 1 < MAX_READ_ATTEMPTS:
-            time.sleep(RETRY_BASE_SECONDS * (2 ** attempt))
+            time.sleep(RETRY_BASE_SECONDS * (2**attempt))
 
     return None, last_error
 
@@ -66,10 +67,17 @@ def render_dashboard():
 
     if snapshot is None:
         st.session_state.plc_failures = st.session_state.get("plc_failures", 0) + 1
+        last_success = st.session_state.get("last_plc_success")
+        last_success_text = (
+            f" | Last successful poll: {last_success:%Y-%m-%d %H:%M:%S}"
+            if last_success
+            else ""
+        )
         st.error(f"PLC OFFLINE — live values unavailable. {read_error}")
         st.caption(
             f"SERVER 192.168.1.88:502 | {now:%Y-%m-%d %H:%M:%S} | "
             f"Health: OFFLINE | Consecutive failed polls: {st.session_state.plc_failures}"
+            f"{last_success_text}"
         )
         st.info("No simulated readings are shown while the PLC is unavailable.")
         st.markdown("BIASHARA MASTERS CONTROL v1.0.0 | a product of KUTSWAINC.")
@@ -96,19 +104,24 @@ def render_dashboard():
             f"{oven['delta']:+.1f} Celsius vs {oven['setpoint']} Celsius",
         )
 
-    if "ticks" not in st.session_state:
-        st.session_state.ticks = []
-    st.session_state.ticks.append(
+    # deque(maxlen=...) bounds memory automatically, avoiding list slicing/copies.
+    history = st.session_state.get("ticks")
+    if not isinstance(history, deque):
+        history = deque(history or (), maxlen=MAX_CHART_SAMPLES)
+        st.session_state.ticks = history
+    history.append(
         {
-            **{
-                f"Oven-{i + 1}": oven_data[f"oven{i + 1}"]["actual"]
-                for i in range(6)
-            }
+            f"Oven-{i + 1}": oven_data[f"oven{i + 1}"]["actual"]
+            for i in range(6)
         }
     )
-    st.session_state.ticks = st.session_state.ticks[-MAX_CHART_SAMPLES:]
+
+    chart_data = {
+        f"Oven-{i + 1}": [sample[f"Oven-{i + 1}"] for sample in history]
+        for i in range(6)
+    }
     st.subheader("Temperature trend — recent PLC polls")
-    st.line_chart(st.session_state.ticks, height=300)
+    st.line_chart(chart_data, height=300)
 
     _, state_col = st.columns([2, 1])
     with state_col:
