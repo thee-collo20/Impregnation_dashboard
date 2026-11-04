@@ -1,46 +1,39 @@
-#This Logic is for the 6 -ovens present in the impregnation line.
-#reads holding registers 0-11 (0-5 actual, 6-11 set-point)
-#pulled after modbus_client reads holding regs.
+# This logic handles the six ovens on the impregnation line.
+
 
 def process_ovens(holding_regs):
-
-    result={}
-    alarms=[]
-
-    actual_index=[0,1,2,3,4,5]
-    setpoint_index=[10,11,12,13,14,15]
+    result = {}
+    alarms = []
+    actuals = []
 
     for i in range(6):
-        try:
-            actual=holding_regs[actual_index[i]]
-            setpoint=holding_regs[setpoint_index[i]]
-        except IndexError:
-            actual=0
-            setpoint=145
+        actual_index = i
+        setpoint_index = i + 10
+        actual = holding_regs[actual_index] if len(holding_regs) > actual_index else 0
+        setpoint = holding_regs[setpoint_index] if len(holding_regs) > setpoint_index else 145
+        actuals.append(actual)
 
-        delta=actual - setpointstatus="OK"
+        delta = actual - setpoint
+        status = "OK"
+        if abs(delta) > 5:
+            status = "CRITICAL"
+            alarms.append(f"OVEN-{i + 1} {delta:+.1f} Celsius OFF TARGET")
+        elif abs(delta) > 2:
+            status = "WARNING"
 
-        if abs(delta)>5:
-            status="CRITICAL"
-            alarms.append(f"OVEN-{i+1} {delta:+.1f}Celcius OFF TARGET")
-        elif abs(delta)>2:
-            status="WARNING"
-
-        result[f"oven{i+1}"]={
+        result[f"oven{i + 1}"] = {
             "actual": actual,
             "setpoint": setpoint,
-            "delta": round(delta,1),
+            "delta": round(delta, 1),
             "status": status,
-            "running": actual>50 #oven is considered running.
-
+            "running": actual > 50,
         }
 
-        #Line Stats
-        actuals=[result[f"oven{i+1}"]["actual"] for i in range(6)]
-        result["stats"]={
-            "avg_temp": round(sum(actuals)/6,1),
-            "delta_max_min": round(max(actuals)-min(actuals),1),
-            "stability": round(100-(max(actuals)-min(actuals))/2,1)
-        }
-        result["alarms"]= alarms
-        return result
+    temperature_spread = max(actuals) - min(actuals)
+    result["stats"] = {
+        "avg_temp": round(sum(actuals) / len(actuals), 1),
+        "delta_max_min": round(temperature_spread, 1),
+        "stability": round(100 - temperature_spread / 2, 1),
+    }
+    result["alarms"] = alarms
+    return result
