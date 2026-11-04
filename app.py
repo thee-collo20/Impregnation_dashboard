@@ -1,8 +1,6 @@
-import random
 from datetime import datetime
+import time
 
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from Logic import alarms, motors, ovens, sensors
@@ -14,7 +12,9 @@ except ImportError:
 
 
 POLL_INTERVAL_SECONDS = 2
-MAX_CHART_SAMPLES = 200
+MAX_CHART_SAMPLES = 120
+MAX_READ_ATTEMPTS = 3
+RETRY_BASE_SECONDS = 0.25
 
 st.set_page_config(
     page_title="BIASHARA MASTERS IMPREGNATION LINE MONITOR",
@@ -35,48 +35,56 @@ st.markdown(
 
 @st.cache_data(ttl=POLL_INTERVAL_SECONDS, show_spinner=False)
 def read_plc_snapshot():
-    """Cache a short-lived PLC snapshot so simultaneous viewers share polling."""
+    """Health-check by reading a snapshot; retry transient failures with backoff."""
     if FactoryPLC is None:
         return None, "pymodbus is unavailable"
 
-    plc = FactoryPLC()
-    try:
-        if not plc.connect():
-            return None, "PLC connection failed"
-        return plc.read_all(), None
-    except Exception as exc:
-        return None, str(exc)
-    finally:
-        plc.close()
+    last_error = "PLC read failed"
+    for attempt in range(MAX_READ_ATTEMPTS):
+        plc = FactoryPLC()
+        try:
+            if not plc.connect():
+                raise ConnectionError("PLC connection failed")
+            return plc.read_all(), None
+        except Exception as exc:
+            last_error = str(exc)
+        finally:
+            try:
+                plc.close()
+            except Exception:
+                pass
+        if attempt + 1 < MAX_READ_ATTEMPTS:
+            time.sleep(RETRY_BASE_SECONDS * (2 ** attempt))
 
-
-def simulated_snapshot():
-    return {
-        "coils": [True, True, True, True],
-        "descrete": [random.choice([True, False]), True, True, False],
-        "holding": [145 + random.uniform(-2, 2) for _ in range(6)]
-        + [0] * 4
-        + [22, 22, 35]
-        + [0] * 7,
-        "input_regs": [320, 85],
-    }
+    return None, last_error
 
 
 def render_dashboard():
     snapshot, read_error = read_plc_snapshot()
-    is_live = snapshot is not None
-    raw = snapshot if is_live else simulated_snapshot()
-
+    now = datetime.now()
     st.markdown("BIASHARA MASTERS SAWMILL")
-    mode = "LIVE" if is_live else "SIMULATION"
+
+    if snapshot is None:
+        st.session_state.plc_failures = st.session_state.get("plc_failures", 0) + 1
+        st.error(f"PLC OFFLINE — live values unavailable. {read_error}")
+        st.caption(
+            f"SERVER 192.168.1.88:502 | {now:%Y-%m-%d %H:%M:%S} | "
+            f"Health: OFFLINE | Consecutive failed polls: {st.session_state.plc_failures}"
+        )
+        st.info("No simulated readings are shown while the PLC is unavailable.")
+        st.markdown("BIASHARA MASTERS CONTROL v1.0.0 | a product of KUTSWAINC.")
+        return
+
+    st.session_state.plc_failures = 0
+    st.session_state.last_plc_success = now
     st.caption(
-        f"SERVER 192.168.1.88:502 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} EAT | {mode}"
-        + (f" | PLC: {read_error}" if read_error else "")
+        f"SERVER 192.168.1.88:502 | {now:%Y-%m-%d %H:%M:%S} | "
+        f"Health: CONNECTED | Poll interval: {POLL_INTERVAL_SECONDS}s"
     )
 
-    oven_data = ovens.process_ovens(raw["holding"])
-    motor_data = motors.process_motors(raw["coils"], raw["holding"])
-    sensor_data = sensors.process_sensors(raw["descrete"], raw["input_regs"])
+    oven_data = ovens.process_ovens(snapshot["holding"])
+    motor_data = motors.process_motors(snapshot["coils"], snapshot["holding"])
+    sensor_data = sensors.process_sensors(snapshot["descrete"], snapshot["input_regs"])
     alert_list = alarms.evaluate_alarms(oven_data, motor_data, sensor_data)
 
     cols = st.columns(3)
@@ -92,34 +100,15 @@ def render_dashboard():
         st.session_state.ticks = []
     st.session_state.ticks.append(
         {
-            "time": datetime.now(),
             **{
-                f"oven{i + 1}": oven_data[f"oven{i + 1}"]["actual"]
+                f"Oven-{i + 1}": oven_data[f"oven{i + 1}"]["actual"]
                 for i in range(6)
-            },
+            }
         }
     )
     st.session_state.ticks = st.session_state.ticks[-MAX_CHART_SAMPLES:]
-
-    history = pd.DataFrame(st.session_state.ticks)
-    colors = ["#0d47a1", "#1976d2", "#ef6c00", "#6a1b9a", "#c62828", "#f9a825"]
-    fig = go.Figure()
-    for i, color in enumerate(colors):
-        fig.add_trace(
-            go.Scatter(
-                x=history["time"],
-                y=history[f"oven{i + 1}"],
-                name=f"OVEN-{i + 1}",
-                line={"color": color},
-            )
-        )
-    fig.update_layout(
-        template="plotly_white",
-        height=380,
-        title="TEMPERATURE TREND",
-        margin={"l": 20, "r": 20, "t": 50, "b": 20},
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.subheader("Temperature trend — recent PLC polls")
+    st.line_chart(st.session_state.ticks, height=300)
 
     _, state_col = st.columns([2, 1])
     with state_col:
@@ -136,13 +125,9 @@ def render_dashboard():
             else:
                 st.warning(alert["msg"])
 
-    st.markdown(
-        "BIASHARA MASTERS CONTROL v1.0.0 | a product of KUTSWAINC."
-    )
+    st.markdown("BIASHARA MASTERS CONTROL v1.0.0 | a product of KUTSWAINC.")
 
 
-# A fragment refreshes the dashboard without blocking the Streamlit server with
-# time.sleep() or forcing a full-app st.rerun() loop.
 if hasattr(st, "fragment"):
     @st.fragment(run_every=POLL_INTERVAL_SECONDS)
     def live_dashboard():
@@ -150,6 +135,5 @@ if hasattr(st, "fragment"):
 
     live_dashboard()
 else:
-    # Compatibility with older Streamlit releases: render once rather than
-    # introducing a blocking rerun loop.
+    # Older Streamlit versions render once; avoid a blocking sleep/rerun loop.
     render_dashboard()

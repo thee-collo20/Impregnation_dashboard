@@ -1,4 +1,2 @@
 streamlit
 pymodbus
-pandas
-plotly
